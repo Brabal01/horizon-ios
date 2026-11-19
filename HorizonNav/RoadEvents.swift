@@ -230,11 +230,16 @@ enum RoadEventMatcher {
 
 /// A bounded cache of recent corridor responses. Cache entries are re-matched against each route's geometry.
 actor RoadEventService {
-    enum Failure: Error { case unavailable, partialResponse }
+    enum Failure: Error { case unavailable, partialResponse, rateLimited }
 
     static let shared = RoadEventService()
+    private static let endpoints = [
+        URL(string: "https://overpass-api.de/api/interpreter")!,
+        URL(string: "https://overpass.private.coffee/api/interpreter")!,
+    ]
     private let download: @Sendable (URLRequest) async throws -> (Data, URLResponse)
     private var cache: [String: (date: Date, data: OverpassRoadData)] = [:]
+    private var retryAfter = Date.distantPast
 
     init(download: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse) = {
         try await URLSession.shared.data(for: $0)
@@ -252,6 +257,7 @@ actor RoadEventService {
             return RoadEventMatcher.match(cached.data, corridor: corridor)
         }
         guard online else { throw Failure.unavailable }
+        guard Date() >= retryAfter else { throw Failure.rateLimited }
         let around = "(around:70,\(points))"
         let query = """
         [out:json][timeout:10];
@@ -261,21 +267,45 @@ actor RoadEventService {
         way(bn.events)["highway"];
         out body geom;
         """
-        var request = URLRequest(url: URL(string: "https://overpass-api.de/api/interpreter")!, timeoutInterval: 16)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
         let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         guard let encoded = query.addingPercentEncoding(withAllowedCharacters: unreserved) else { throw Failure.unavailable }
-        request.httpBody = Data("data=\(encoded)".utf8)
-        let (body, response) = try await download(request)
-        try Task.checkCancellation()
-        guard (response as? HTTPURLResponse)?.statusCode == 200, body.count <= 8_000_000 else { throw Failure.unavailable }
-        let decoded = try JSONDecoder().decode(OverpassRoadData.self, from: body)
-        guard decoded.remark == nil else { throw Failure.partialResponse }
+        let decoded = try await fetch(Data("data=\(encoded)".utf8))
         if cache.count >= 12, let oldest = cache.min(by: { $0.value.date < $1.value.date })?.key {
             cache.removeValue(forKey: oldest)
         }
         cache[points] = (Date(), decoded)
         return RoadEventMatcher.match(decoded, corridor: corridor)
+    }
+
+    private func fetch(_ query: Data) async throws -> OverpassRoadData {
+        var lastError: Error = Failure.unavailable
+        for endpoint in Self.endpoints {
+            try Task.checkCancellation()
+            var request = URLRequest(url: endpoint, timeoutInterval: 14)
+            request.httpMethod = "POST"
+            request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+            request.httpBody = query
+            do {
+                let (body, response) = try await download(request)
+                try Task.checkCancellation()
+                let http = response as? HTTPURLResponse
+                let status = http?.statusCode
+                if status == 429 {
+                    let seconds = http?.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init) ?? 300
+                    retryAfter = Date().addingTimeInterval(max(60, seconds))
+                    throw Failure.rateLimited
+                }
+                guard status == 200, body.count <= 8_000_000 else { throw Failure.unavailable }
+                let decoded = try JSONDecoder().decode(OverpassRoadData.self, from: body)
+                guard decoded.remark == nil else { throw Failure.partialResponse }
+                return decoded
+            } catch Failure.rateLimited {
+                throw Failure.rateLimited
+            } catch {
+                try Task.checkCancellation()
+                lastError = error
+            }
+        }
+        throw lastError
     }
 }

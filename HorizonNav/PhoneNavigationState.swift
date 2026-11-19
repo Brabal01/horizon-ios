@@ -24,6 +24,7 @@ final class PhoneRoadEvents: ObservableObject {
     private var routeGeometry: RoadCorridor?
     private var window: Int?
     private var loaded: [RoadEvent] = []
+    private var loadedAt: Date?
     private var retryAfter = Date.distantPast
     private var validPosition = false
     private var wasOnline: Bool?
@@ -41,6 +42,7 @@ final class PhoneRoadEvents: ObservableObject {
         routeGeometry = nil
         window = nil
         loaded = []
+        loadedAt = nil
         upcoming = []
         progress = 0
         validPosition = false
@@ -63,6 +65,8 @@ final class PhoneRoadEvents: ObservableObject {
         }
         let advanced = max(self.progress, progress)
         if advanced != self.progress { self.progress = advanced }
+        let expired = loadedAt.map { Date().timeIntervalSince($0) >= 3_600 } ?? false
+        if expired { loaded = []; loadedAt = nil }
         refreshUpcoming()
         guard let routeGeometry, let length = routeGeometry.progress.last, length > 1 else { state = .unavailable; return }
 
@@ -70,7 +74,7 @@ final class PhoneRoadEvents: ObservableObject {
         let next = Int(self.progress / 2_500)
         let networkReturned = wasOnline == false && online
         wasOnline = online
-        if window != next || (state == .unavailable && (networkReturned || Date() >= retryAfter)) {
+        if window != next || expired || (state == .unavailable && (networkReturned || Date() >= retryAfter)) {
             window = next
             task?.cancel()
             let start = max(0, Double(next) * 2_500 - 100)
@@ -85,11 +89,13 @@ final class PhoneRoadEvents: ObservableObject {
                     let events = try await service.events(along: corridor, online: online)
                     guard !Task.isCancelled, let self, self.generation == generation else { return }
                     self.loaded = events
+                    self.loadedAt = Date()
                     self.state = .ready
                     self.refreshUpcoming()
                 } catch {
                     guard !Task.isCancelled, let self, self.generation == generation else { return }
-                    self.retryAfter = Date().addingTimeInterval(online ? 90 : 300)
+                    let rateLimited = (error as? RoadEventService.Failure) == .rateLimited
+                    self.retryAfter = Date().addingTimeInterval(online && !rateLimited ? 90 : 300)
                     self.state = .unavailable
                     self.refreshUpcoming()
                 }
