@@ -9,11 +9,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: sideload-${{ github.ref }}
+  group: sideload-macos-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [simulator, device]
     runs-on: macos-15-intel
     timeout-minutes: 45
     env:
@@ -32,7 +37,8 @@ jobs:
       - name: Resolve Swift packages
         run: xcodebuild -project HorizonNav.xcodeproj -scheme HorizonNav -resolvePackageDependencies -clonedSourcePackagesDirPath build/packages
       - name: Test on iPhone Simulator
-        id: simulator
+        if: matrix.target == 'simulator'
+        timeout-minutes: 17
         run: |
           pack="$PWD/build/valhalla-singapore"
           mkdir -p "$pack"
@@ -52,19 +58,18 @@ jobs:
           set -o pipefail
           xcodebuild -project HorizonNav.xcodeproj -scheme HorizonNav -destination "platform=iOS Simulator,id=$device" \
             -derivedDataPath build/simulator -clonedSourcePackagesDirPath build/packages \
-            -resultBundlePath build/HorizonNavTests.xcresult CODE_SIGNING_ALLOWED=NO CODE_SIGN_ENTITLEMENTS= test
+            -parallel-testing-enabled NO -resultBundlePath build/HorizonNavTests.xcresult CODE_SIGNING_ALLOWED=NO CODE_SIGN_ENTITLEMENTS= test
       - name: Build and verify unsigned iPhone IPA
-        if: ${{ !cancelled() && (steps.simulator.outcome == 'success' || steps.simulator.outcome == 'failure') }}
-        id: ipa
+        if: matrix.target == 'device'
         run: bash scripts/build-sideload.sh
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() && steps.ipa.outcome == 'success' }}
+        if: matrix.target == 'device'
         with:
           name: HorizonNav-AndroidStyle-unsigned
           path: build/HorizonNav-AndroidStyle-unsigned.ipa
           if-no-files-found: error
       - name: Upload test results
-        if: always()
+        if: always() && matrix.target == 'simulator'
         uses: actions/upload-artifact@v4
         with:
           name: HorizonNavTests
