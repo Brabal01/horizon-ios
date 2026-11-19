@@ -11,16 +11,20 @@ ipa="$PWD/build/HorizonNav-AndroidStyle-unsigned.ipa"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 mkdir "$stage/Payload"
-ditto "$app" "$stage/Payload/HorizonNav.app"
-plist="$stage/Payload/HorizonNav.app/Info.plist"
-/usr/libexec/PlistBuddy -c 'Delete :UIApplicationSceneManifest:UISceneConfigurations' "$plist"
+payload="$stage/Payload/HorizonNav.app"
+ditto "$app" "$payload"
+cp LICENSE "$payload/LICENSE.txt"
+test -s "$payload/HorizonVehicle.glb"
+plist="$payload/Info.plist"
+/usr/libexec/PlistBuddy -c 'Delete :UIApplicationSceneManifest:UISceneConfigurations:CPTemplateApplicationSceneSessionRoleApplication' "$plist"
+/usr/libexec/PlistBuddy -c 'Delete :UIApplicationSceneManifest:UISceneConfigurations:CPTemplateApplicationInstrumentClusterSceneSessionRoleApplication' "$plist"
 /usr/libexec/PlistBuddy -c 'Delete :CPSupportsInstrumentClusterNavigationScene' "$plist"
-binary="$stage/Payload/HorizonNav.app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+binary="$payload/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
 test -s "$binary"
-test ! -e "$stage/Payload/HorizonNav.app/embedded.mobileprovision"
-test ! -d "$stage/Payload/HorizonNav.app/_CodeSignature"
+test ! -e "$payload/embedded.mobileprovision"
+test ! -d "$payload/_CodeSignature"
 xcrun lipo -verify_arch arm64 "$binary"
-xcrun vtool -show-build "$binary" | awk '$1 == "platform" && $2 == "IOS" { ok = 1 } END { exit !ok }'
+xcrun vtool -show-build "$binary" | awk '$1 == "platform" && toupper($2) == "IOS" { ok = 1 } END { exit !ok }'
 rm -f "$ipa"
 (cd "$stage" && zip -qry "$ipa" Payload)
 unzip -tq "$ipa"
