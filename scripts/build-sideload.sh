@@ -23,8 +23,8 @@ binary="$payload/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plis
 test -s "$binary"
 test ! -e "$payload/embedded.mobileprovision"
 test ! -d "$payload/_CodeSignature"
-xcrun lipo -verify_arch arm64 "$binary"
-xcrun vtool -show-build "$binary" | awk '$1 == "platform" && toupper($2) == "IOS" { ok = 1 } END { exit !ok }'
+xcrun lipo "$binary" -verify_arch arm64
+xcrun vtool -show-build "$binary" | tee /dev/stderr | awk '$1 == "platform" && toupper($2) == "IOS" { ok = 1 } END { exit !ok }'
 rm -f "$ipa"
 (cd "$stage" && zip -qry "$ipa" Payload)
 unzip -tq "$ipa"
