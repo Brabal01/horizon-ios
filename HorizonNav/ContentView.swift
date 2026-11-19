@@ -289,7 +289,7 @@ struct ContentView: View {
                     .focused($searchFocused)
                     .textInputAutocapitalization(.words)
                     .submitLabel(.search)
-                    .onSubmit(perform: search)
+                    .onSubmit { search() }
                     .onChange(of: store.searchText) { _, _ in clearSearchResults() }
                 if !store.searchText.isEmpty {
                     Button { store.searchText = ""; clearSearchResults() } label: {
