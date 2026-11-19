@@ -165,6 +165,8 @@ enum RoadEventMatcher {
             if kind == .signal, direction == nil, ways.count < 2,
                ways.first?.tags?["oneway"].map({ !["yes", "1", "true", "-1"].contains($0) }) ?? true { continue }
             for candidate in corridor.candidates(near: point) {
+                // Closely spaced carriageways can have identical bearings, so require centreline agreement too.
+                guard candidate.offset <= 3 else { continue }
                 guard let approach = bestApproach(for: node.id, on: ways, route: corridor, at: candidate.progress) else { continue }
                 guard kind == .rail || applies(kind, tags: tags, direction: direction, approach: approach) else { continue }
                 let barrier = tags["crossing:barrier"].flatMap {
@@ -261,8 +263,10 @@ actor RoadEventService {
         """
         var request = URLRequest(url: URL(string: "https://overpass-api.de/api/interpreter")!, timeoutInterval: 16)
         request.httpMethod = "POST"
-        request.setValue("text/plain; charset=utf-8", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data(query.utf8)
+        request.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: unreserved) else { throw Failure.unavailable }
+        request.httpBody = Data("data=\(encoded)".utf8)
         let (body, response) = try await download(request)
         try Task.checkCancellation()
         guard (response as? HTTPURLResponse)?.statusCode == 200, body.count <= 8_000_000 else { throw Failure.unavailable }
