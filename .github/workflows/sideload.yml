@@ -25,11 +25,23 @@ jobs:
           xcodebuild -version
           brew install xcodegen
           xcodegen generate
+      - uses: actions/cache@v4
+        with:
+          path: build/packages
+          key: horizon-packages-${{ runner.os }}-${{ runner.arch }}-xcode26.3-${{ hashFiles('project.yml', '**/Package.resolved') }}
       - name: Resolve Swift packages
         run: xcodebuild -project HorizonNav.xcodeproj -scheme HorizonNav -resolvePackageDependencies -clonedSourcePackagesDirPath build/packages
       - name: Test on iPhone Simulator
         id: simulator
         run: |
+          pack="$PWD/build/valhalla-singapore"
+          mkdir -p "$pack"
+          for file in valhalla.json admins.sqlite tiles.tar; do
+            curl --fail --location --retry 2 --max-time 180 \
+              "https://github.com/benbishop028-arch/Horizon-Maps/releases/download/pack-singapore/$file" \
+              --output "$pack/$file"
+          done
+          export TEST_RUNNER_HN_VALHALLA_PACK="$pack"
           device=$(xcrun simctl list devices available --json | python3 -c '
           import json, sys
           runtimes = json.load(sys.stdin)["devices"]
