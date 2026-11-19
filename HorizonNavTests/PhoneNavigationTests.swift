@@ -2,6 +2,9 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+#if canImport(CoreLocation)
+import CoreLocation
+#endif
 import Testing
 @testable import HorizonNav
 
@@ -104,6 +107,32 @@ struct PhoneNavigationTests {
         await #expect(throws: RoadEventService.Failure.self) { try await down.events(along: corridor, online: false) }
     }
 
+    @Test func recoversFromServerFailureViaTheSecondaryEndpoint() async throws {
+        let corridor = route([point(0), point(150)])
+        let service = RoadEventService { request in
+            let alone = request.url?.host == "overpass-api.de"
+            let response = HTTPURLResponse(url: request.url!, statusCode: alone ? 503 : 200, httpVersion: nil, headerFields: nil)!
+            return (Data(#"{"elements":[]}"#.utf8), response)
+        }
+        #expect(try await service.events(along: corridor, online: true).isEmpty)
+    }
+
+    @Test func rateLimitStopsTheSecondaryRequestAndAppliesToTheNextWindow() async {
+        let corridor = route([point(0), point(150)])
+        let service = RoadEventService { request in
+            let rateLimited = request.url?.host == "overpass-api.de"
+            let response = HTTPURLResponse(url: request.url!, statusCode: rateLimited ? 429 : 200, httpVersion: nil,
+                                           headerFields: ["Retry-After": "180"])!
+            return (Data(#"{"elements":[]}"#.utf8), response)
+        }
+        await #expect(throws: RoadEventService.Failure.rateLimited) {
+            try await service.events(along: corridor, online: true)
+        }
+        await #expect(throws: RoadEventService.Failure.rateLimited) {
+            try await service.events(along: corridor, online: true)
+        }
+    }
+
     @Test func successfulEmptyResponseRemainsUsableOffline() async throws {
         let corridor = route([point(0), point(150)])
         let service = RoadEventService { request in
@@ -134,3 +163,49 @@ struct PhoneNavigationTests {
         #expect(PhoneCameraPolicy.easedBearing(from: 350, to: 10, amount: 0.5) == 0)
     }
 }
+
+
+#if canImport(CoreLocation)
+struct RoadEventsLifecycleTests {
+    @Test @MainActor func changingTheRouteImmediatelyClearsOldEvents() async throws {
+        let source = #"""
+        {"elements":[
+         {"type":"node","id":1,"lat":0,"lon":0.001,"tags":{"highway":"stop","direction":"forward"}},
+         {"type":"way","id":10,"nodes":[20,1,21],"geometry":[{"lat":0,"lon":0},{"lat":0,"lon":0.001},{"lat":0,"lon":0.003}],"tags":{"highway":"residential"}}
+        ]}
+        """#
+        let service = RoadEventService { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(source.utf8), response)
+        }
+        let events = PhoneRoadEvents(service: service)
+        let first = route(latitude: 0)
+        events.update(route: first, progress: 0, validPosition: true, online: true)
+        try await waitForResult(events)
+        #expect(events.upcoming.map(\.kind) == [.stop])
+        events.update(route: first, progress: 125, validPosition: true, online: true)
+        #expect(events.upcoming.isEmpty)
+
+        events.update(route: route(latitude: 0.001), progress: 0, validPosition: true, online: true)
+        #expect(events.upcoming.isEmpty)
+        #expect(events.progress == 0)
+        try await waitForResult(events)
+        #expect(events.upcoming.isEmpty)
+    }
+
+    @MainActor private func waitForResult(_ events: PhoneRoadEvents) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while events.state == .loading && clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(events.state == .ready)
+    }
+
+    private func route(latitude: Double) -> RouteOption {
+        RouteOption(name: "Test route", distance: 334, expectedTravelTime: 60,
+                    coordinates: [.init(latitude: latitude, longitude: 0), .init(latitude: latitude, longitude: 0.003)],
+                    steps: [], advisories: [], source: .offline("Test"))
+    }
+}
+#endif
