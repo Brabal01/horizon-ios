@@ -49,6 +49,14 @@ struct PhoneNavigationTests {
         #expect(RoadEventMatcher.match(data, corridor: route([point(0), point(250)])).isEmpty)
     }
 
+    @Test func parallelRoadInSameDirectionIsNotTheTravelledRoad() {
+        let data = OverpassRoadData(elements: [
+            node(1, point(110, 4), ["highway": "traffic_signals"]),
+            way(10, [20, 1, 21], [point(0, 4), point(110, 4), point(250, 4)], "yes")
+        ], remark: nil)
+        #expect(RoadEventMatcher.match(data, corridor: route([point(0), point(250)])).isEmpty)
+    }
+
     @Test func crossingBarrierUsesMappedValueAndEventsSortByDrivingDistance() {
         let data = OverpassRoadData(elements: [
             node(3, point(180), ["railway": "level_crossing", "crossing:barrier": "half"]),
